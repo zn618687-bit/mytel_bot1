@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
 """
-Spirit Pro Bot – MyTel SSO + Magic Wheel
-Features: Force Join, Multi-Account, MyTel OTP → Magic Wheel SSO,
-          Daily Claim, Auto Claim (7 days, 12:05 AM), Ultra Clean UI.
+Spirit Pro Bot – MyTel SSO + Magic Wheel (Error‑Free OTP Version)
 """
 
-import asyncio
-import logging
-import json
-import os
-import random
-import time
-import base64
-import requests
+import asyncio, logging, json, os, random, time, base64, requests
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List, Any
 
@@ -92,7 +83,7 @@ def save_accounts(accounts: Dict[str, List[Dict[str, Any]]]):
     with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
         json.dump(accounts, f, indent=2, ensure_ascii=False)
 
-# ================== JWT (for Magic Wheel token) ==================
+# ================== JWT (Magic Wheel token) ==================
 def decode_jwt(token: str) -> Optional[Dict]:
     try:
         parts = token.split(".")
@@ -119,7 +110,12 @@ def api_call(method, url, headers=None, json_data=None, timeout=15):
             resp = requests.get(url, headers=headers, timeout=timeout, proxies=proxy)
         else:
             resp = requests.post(url, headers=headers, json=json_data, timeout=timeout, proxies=proxy)
-        return resp.status_code, resp.json() if resp.headers.get("content-type","").startswith("application/json") else resp.text
+        # Parse JSON if possible
+        content_type = resp.headers.get("content-type", "")
+        if "application/json" in content_type:
+            return resp.status_code, resp.json()
+        else:
+            return resp.status_code, resp.text
     except Exception as e:
         return None, str(e)
 
@@ -179,7 +175,7 @@ def ensure_magic_token(acc: dict) -> bool:
         if not mytel_token:
             return False
         code, resp = magicwheel_sso_login(acc["phone"], mytel_token)
-        if code == 200 and resp.get("success"):
+        if code == 200 and isinstance(resp, dict) and resp.get("success"):
             data = resp["data"]
             acc["magic_token"] = data["accessToken"]
             acc["magic_token_time"] = int(time.time())
@@ -209,7 +205,7 @@ async def is_user_member(context, user_id) -> bool:
 async def force_join_prompt(context, chat_id):
     await context.bot.send_message(
         chat_id=chat_id,
-        text="⚠️ @MytelAtom_Hub ကို Join ထားရန် လိုအပ်ပါသည်।\n\nJoin ပြီးပါက ✅ Join ပြီးပြီ ကိုနှိပ်ပါ။",
+        text="⚠️ @MytelAtom_Hub ကို Join ထားရန် လိုအပ်ပါသည်။\n\nJoin ပြီးပါက ✅ Join ပြီးပြီ ကိုနှိပ်ပါ။",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📢 Join Channel", url="https://t.me/MytelAtom_Hub")],
             [InlineKeyboardButton("✅ Join ပြီးပြီ", callback_data="verify_join")]
@@ -238,7 +234,10 @@ def account_dashboard(acc, idx):
     auto = acc.get("auto_mode", False)
     if auto:
         remaining = acc.get("auto_remaining_days", 7)
-        auto_text = f"⚡ Auto ON (Day {7-remaining+1}/7)" if remaining>0 else "⚡ Auto ON"
+        if remaining > 0:
+            auto_text = f"⚡ Auto ON (Day {7-remaining+1}/7)"
+        else:
+            auto_text = "⚡ Auto ON"
         toggle_label = "⚡ Auto ON [ပိတ်မယ်]"
     else:
         auto_text = ""
@@ -255,7 +254,7 @@ def account_dashboard(acc, idx):
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
-# ================== HANDLERS ==================
+# ================== HANDLERS (States) ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not await is_user_member(context, user_id):
@@ -288,7 +287,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["temp_phone"] = text
         code, resp = mytel_get_otp(text)
-        if code == 200 and resp.get("errorCode") == "0":
+        if code == 200 and isinstance(resp, dict) and resp.get("errorCode") == "0":
             context.user_data["state"] = "otp"
             await update.message.reply_text(f"📩 {text} သို့ OTP ပို့လိုက်ပါပြီ။ OTP ကို ရိုက်ထည့်ပေးပါ။")
         else:
@@ -299,10 +298,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         otp = text
         msg = await update.message.reply_text("⏳ စစ်ဆေးနေပါသည်...")
         code, resp = mytel_validate_otp(phone, otp)
-        if code == 200 and resp.get("errorCode") == "0":
+        if code == 200 and isinstance(resp, dict) and resp.get("errorCode") == "0":
             mytel_token = resp["data"]["accessToken"]
             l_code, l_resp = magicwheel_sso_login(phone, mytel_token)
-            if l_code == 200 and l_resp.get("success"):
+            if l_code == 200 and isinstance(l_resp, dict) and l_resp.get("success"):
                 data = l_resp["data"]
                 new_acc = {
                     "phone": phone,
@@ -352,12 +351,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Session expired. Please re-add account.", show_alert=True)
             return
         c, r = magicwheel_api_post(MW_RECEIVE, acc["magic_token"], {"idMission": 1})
-        if r and r.get("success"):
+        if r and isinstance(r, dict) and r.get("success"):
             acc["last_heart"] = r["data"]["heart"]
             save_accounts(all_acc)
             await query.answer(f"✅ Success! +{r['data']['heart']}❤️", show_alert=True)
         else:
-            await query.answer(f"❌ {r.get('message', 'Already claimed')}", show_alert=True)
+            msg = r.get('message', 'Already claimed') if isinstance(r, dict) else "Error"
+            await query.answer(f"❌ {msg}", show_alert=True)
         text, kb = account_dashboard(acc, idx)
         await edit_or_send(query.message, text, reply_markup=kb)
     elif data.startswith("toggle_auto_"):
@@ -381,7 +381,7 @@ async def scheduled_auto_claim(app: Application):
             if acc.get("auto_mode") and acc.get("auto_remaining_days", 0) > 0:
                 if ensure_magic_token(acc):
                     c, r = magicwheel_api_post(MW_RECEIVE, acc["magic_token"], {"idMission": 1})
-                    if r and r.get("success"):
+                    if r and isinstance(r, dict) and r.get("success"):
                         acc["auto_remaining_days"] -= 1
                         if acc["auto_remaining_days"] <= 0: acc["auto_mode"] = False
                         try:
