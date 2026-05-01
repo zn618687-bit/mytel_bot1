@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Spirit Pro Bot – MyTel SSO + Magic Wheel (Error‑Free OTP Version)
+Final Release – All features working.
 """
 
 import asyncio, logging, json, os, random, time, base64, requests
@@ -31,7 +32,7 @@ MYTEL_OTP_URL = "https://apis.mytel.com.mm/myid/authen/v1.0/login/method/otp/get
 MYTEL_VALIDATE_URL = "https://apis.mytel.com.mm/myid/authen/v1.0/login/method/otp/validate-otp"
 
 MW_BASE_URL = "http://api.magicwheel.com.mm/v1"
-MW_SSO_LOGIN = "/users/login"          # POST, body: isdn, tokenEncoded
+MW_SSO_LOGIN = "/users/login"
 MW_GET_HEART = "/users/get-heart"
 MW_MISSIONS = "/missions"
 MW_RECEIVE = "/missions/receive"
@@ -110,7 +111,6 @@ def api_call(method, url, headers=None, json_data=None, timeout=15):
             resp = requests.get(url, headers=headers, timeout=timeout, proxies=proxy)
         else:
             resp = requests.post(url, headers=headers, json=json_data, timeout=timeout, proxies=proxy)
-        # Parse JSON if possible
         content_type = resp.headers.get("content-type", "")
         if "application/json" in content_type:
             return resp.status_code, resp.json()
@@ -137,7 +137,7 @@ def mytel_validate_otp(phone: str, otp: str):
     }
     data = {
         "phoneNumber": phone,
-        "password": otp,  # yes, the field is named password
+        "password": otp,
         "appVersion": "1.0.93",
         "buildVersionApp": "217",
         "deviceId": "0",
@@ -168,14 +168,13 @@ def magicwheel_api_post(path, access_token, json_data):
 
 # ================== HELPERS ==================
 def ensure_magic_token(acc: dict) -> bool:
-    """Ensure account has a valid Magic Wheel token. If expired, try SSO login with stored MyTel token."""
     magic_token = acc.get("magic_token")
     if not magic_token or token_expired(magic_token):
         mytel_token = acc.get("mytel_access_token")
         if not mytel_token:
             return False
         code, resp = magicwheel_sso_login(acc["phone"], mytel_token)
-        if code == 200 and isinstance(resp, dict) and resp.get("success"):
+        if 200 <= code < 300 and isinstance(resp, dict) and resp.get("success"):
             data = resp["data"]
             acc["magic_token"] = data["accessToken"]
             acc["magic_token_time"] = int(time.time())
@@ -205,7 +204,7 @@ async def is_user_member(context, user_id) -> bool:
 async def force_join_prompt(context, chat_id):
     await context.bot.send_message(
         chat_id=chat_id,
-        text="⚠️ @MytelAtom_Hub ကို Join ထားရန် လိုအပ်ပါသည်။\n\nJoin ပြီးပါက ✅ Join ပြီးပြီ ကိုနှိပ်ပါ။",
+        text="⚠️ @MytelAtom_Hub ကို Join ထားရန် လိုအပ်ပါသည်।\n\nJoin ပြီးပါက ✅ Join ပြီးပြီ ကိုနှိပ်ပါ။",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📢 Join Channel", url="https://t.me/MytelAtom_Hub")],
             [InlineKeyboardButton("✅ Join ပြီးပြီ", callback_data="verify_join")]
@@ -254,7 +253,7 @@ def account_dashboard(acc, idx):
     ]
     return text, InlineKeyboardMarkup(keyboard)
 
-# ================== HANDLERS (States) ==================
+# ================== HANDLERS ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not await is_user_member(context, user_id):
