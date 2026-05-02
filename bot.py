@@ -307,44 +307,91 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ OTP ပို့၍မရပါ။ (Status: {code}) {resp}")
 
     elif context.user_data.get("state") == "otp":
-        phone = context.user_data["temp_phone"]
         otp = text
-        msg = await update.message.reply_text("⏳ စစ်ဆေးနေပါသည်...")
-        code, resp = mytel_validate_otp(phone, otp)
-        # Success check: any 2xx status code and errorCode is 0 or 200
-        is_success = False
-        if code and 200 <= code < 300 and isinstance(resp, dict):
-            err_code = str(resp.get("errorCode", ""))
-            if err_code in ["0", "200"]:
-                is_success = True
+        phone = context.user_data.get("temp_phone")
+        if not phone:
+            await update.message.reply_text("Session expired. /start again.")
+            context.user_data.clear()
+            return
 
-        if is_success:
-            mytel_token = resp["data"]["accessToken"]
-            l_code, l_resp = magicwheel_sso_login(phone, mytel_token)
-            if l_code == 200 and isinstance(l_resp, dict) and l_resp.get("success"):
-                data = l_resp["data"]
-                new_acc = {
+        # ၁။ User ရဲ့ OTP message ကို ၂ စက္ကန့်အတွင်း ဖျက်မယ်။
+        context.job_queue.run_once(
+            lambda _: context.bot.delete_message(update.effective_chat.id, update.message.message_id),
+            when=2
+        )
+
+        # ၂။ "စစ်ဆေးနေသည်..." status message တစ်ခုပို့မယ်။
+        status_msg = await update.message.reply_text("⏳ စစ်ဆေးနေပါသည်...")
+
+        # ၃။ OTP Validation API ကိုခေါ်မယ်။
+        try:
+            code, resp = mytel_validate_otp(phone, otp)
+        except Exception as e:
+            await status_msg.edit_text(f"❌ ချိတ်ဆက်မရပါ (Network Error): {e}")
+            return
+
+        # ၄။ Response ကို စစ်ဆေးမယ်။
+        # Note: Acceptance criteria modified to match previous fix for errorCode 0/200 and 2xx status
+        is_otp_success = False
+        if code and 200 <= code < 300 and isinstance(resp, dict):
+            # Checking both result structure and common error codes
+            if (resp.get("result") and resp["result"].get("access_token")) or \
+               (str(resp.get("errorCode", "")) in ["0", "200"] and resp.get("data", {}).get("accessToken")):
+                is_otp_success = True
+
+        if is_otp_success:
+            # OTP အောင်မြင် → MyTel token ရပြီ။
+            # Handling both "result" (from snippet) and "data" (from previous API structure)
+            if resp.get("result"):
+                mytel_token = resp["result"]["access_token"]
+                mytel_refresh = resp["result"].get("refresh_token")
+            else:
+                mytel_token = resp["data"]["accessToken"]
+                mytel_refresh = None
+
+            # Status ကို "Magic Wheel ဝင်နေသည်..." လို့ပြောင်းမယ်။
+            await status_msg.edit_text("✅ MyTel အောင်မြင်ပါပြီ။ ⏳ Magic Wheel သို့ ဝင်ရောက်နေသည်...")
+
+            # Magic Wheel SSO Login ခေါ်မယ်။
+            sso_code, sso_resp = magicwheel_sso_login(phone, mytel_token)
+            if (sso_code and 200 <= sso_code < 300 and
+                    isinstance(sso_resp, dict) and
+                    sso_resp.get("success")):
+                data = sso_resp["data"]
+                account = {
                     "phone": phone,
                     "mytel_access_token": mytel_token,
+                    "mytel_refresh_token": mytel_refresh,
                     "magic_token": data["accessToken"],
                     "magic_token_time": int(time.time()),
                     "user_info": data.get("user", {}),
                     "auto_mode": False,
-                    "auto_remaining_days": 0,
-                    "last_heart": "?"
+                    "auto_remaining_days": 7,
+                    "last_heart": 0
                 }
                 all_acc = load_accounts()
                 user_list = all_acc.get(user_id, [])
                 user_list = [a for a in user_list if a["phone"] != phone]
-                user_list.append(new_acc)
+                user_list.append(account)
                 all_acc[user_id] = user_list
                 save_accounts(all_acc)
+                accounts = all_acc[user_id]
+
+                # Status message ကို ဖျက်ပြီး အကောင့်စာရင်းကို သန့်သန့်လေးပြမယ်။
+                await status_msg.delete()
+                await update.message.reply_text(
+                    "📱 ကျွန်ုပ်၏အကောင့်များ",
+                    reply_markup=account_list_keyboard(accounts)
+                )
                 context.user_data.clear()
-                await msg.edit_text(f"✅ {phone} ကို အောင်မြင်စွာ ထည့်သွင်းပြီးပါပြီ။", reply_markup=main_menu_keyboard(user_list))
             else:
-                await msg.edit_text(f"❌ Magic Wheel SSO Login failed: {l_resp}")
+                # Magic Wheel SSO မအောင်မြင်
+                err_detail = sso_resp if isinstance(sso_resp, dict) else "Unknown error"
+                await status_msg.edit_text(f"❌ Magic Wheel SSO မအောင်မြင်ပါ။ {err_detail}")
         else:
-            await msg.edit_text(f"❌ OTP မှားယွင်းနေပါသည်။ {resp}")
+            # OTP Validation မအောင်မြင် (သို့) error ပြန်
+            err_detail = resp if isinstance(resp, dict) else "Unknown error"
+            await status_msg.edit_text(f"❌ OTP အတည်မပြုနိုင်ပါ။ {err_detail}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
