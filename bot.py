@@ -104,19 +104,23 @@ def token_expired(token: str) -> bool:
     return payload["exp"] < (int(time.time()) + 60)
 
 # ================== API CALLS ==================
-def api_call(method, url, headers=None, json_data=None, timeout=15):
-    proxy = get_random_proxy()
+def api_call(method, url, headers=None, json_data=None, timeout=15, use_proxy=True):
+    proxy = get_random_proxy() if use_proxy else None
     try:
         if method == "GET":
-            resp = requests.get(url, headers=headers, timeout=timeout, proxies=proxy)
+            resp = requests.get(url, headers=headers, timeout=timeout, proxies=proxy, allow_redirects=True)
         else:
-            resp = requests.post(url, headers=headers, json=json_data, timeout=timeout, proxies=proxy)
+            resp = requests.post(url, headers=headers, json=json_data, timeout=timeout, proxies=proxy, allow_redirects=True)
+        
+        logger.info(f"API Call: {method} {url} | Status: {resp.status_code}")
+        
         content_type = resp.headers.get("content-type", "")
         if "application/json" in content_type:
             return resp.status_code, resp.json()
         else:
             return resp.status_code, resp.text
     except Exception as e:
+        logger.error(f"API Error: {method} {url} | {str(e)}")
         return None, str(e)
 
 def mytel_get_otp(phone: str):
@@ -286,18 +290,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data["temp_phone"] = text
         code, resp = mytel_get_otp(text)
-        if code == 200 and isinstance(resp, dict) and resp.get("errorCode") == "0":
+        # Success check: any 2xx status code OR errorCode is 0 or 200
+        is_success = False
+        if code and 200 <= code < 300:
+            if isinstance(resp, dict):
+                err_code = str(resp.get("errorCode", ""))
+                if err_code in ["0", "200"] or resp.get("message") == "Otp code was sent to your phone number":
+                    is_success = True
+            else:
+                is_success = True # Assume success if 2xx and not JSON
+
+        if is_success:
             context.user_data["state"] = "otp"
             await update.message.reply_text(f"📩 {text} သို့ OTP ပို့လိုက်ပါပြီ။ OTP ကို ရိုက်ထည့်ပေးပါ။")
         else:
-            await update.message.reply_text(f"❌ OTP ပို့၍မရပါ။ {resp}")
+            await update.message.reply_text(f"❌ OTP ပို့၍မရပါ။ (Status: {code}) {resp}")
 
     elif context.user_data.get("state") == "otp":
         phone = context.user_data["temp_phone"]
         otp = text
         msg = await update.message.reply_text("⏳ စစ်ဆေးနေပါသည်...")
         code, resp = mytel_validate_otp(phone, otp)
-        if code == 200 and isinstance(resp, dict) and resp.get("errorCode") == "0":
+        # Success check: any 2xx status code and errorCode is 0 or 200
+        is_success = False
+        if code and 200 <= code < 300 and isinstance(resp, dict):
+            err_code = str(resp.get("errorCode", ""))
+            if err_code in ["0", "200"]:
+                is_success = True
+
+        if is_success:
             mytel_token = resp["data"]["accessToken"]
             l_code, l_resp = magicwheel_sso_login(phone, mytel_token)
             if l_code == 200 and isinstance(l_resp, dict) and l_resp.get("success"):
