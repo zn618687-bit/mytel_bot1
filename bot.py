@@ -441,32 +441,255 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_or_send(query.message, text, reply_markup=kb)
 
 # ================== SCHEDULER ==================
+
+
 async def scheduled_auto_claim(app: Application):
-    all_acc = load_accounts()
-    for uid_str, acc_list in all_acc.items():
-        for acc in acc_list:
-            if acc.get("auto_mode") and acc.get("auto_remaining_days", 0) > 0:
-                if ensure_magic_token(acc):
-                    c, r = magicwheel_api_post(MW_RECEIVE, acc["magic_token"], {"idMission": 1})
-                    if r and isinstance(r, dict) and r.get("success"):
-                        acc["auto_remaining_days"] -= 1
-                        if acc["auto_remaining_days"] <= 0: acc["auto_mode"] = False
+    """
+    Scheduled job that runs daily at 12:05 AM Myanmar time (UTC+6:30).
+    Processes all accounts with auto_mode enabled and claims daily hearts.
+    """
+    logger.info("[AUTO CLAIM] Starting scheduled auto-claim job...")
+    try:
+        all_acc = load_accounts()
+        logger.info(f"[AUTO CLAIM] Loaded {len(all_acc)} users with accounts")
+        
+        total_processed = 0
+        total_claimed = 0
+        
+        for uid_str, acc_list in all_acc.items():
+            logger.info(f"[AUTO CLAIM] Processing user {uid_str} with {len(acc_list)} accounts")
+            
+            for idx, acc in enumerate(acc_list):
+                phone = acc.get("phone", "unknown")
+                auto_mode = acc.get("auto_mode", False)
+                remaining_days = acc.get("auto_remaining_days", 0)
+                
+                logger.info(f"[AUTO CLAIM] Account {idx} ({phone}): auto_mode={auto_mode}, remaining_days={remaining_days}")
+                
+                if not auto_mode:
+                    logger.debug(f"[AUTO CLAIM] Skipping {phone}: auto_mode is disabled")
+                    continue
+                
+                if remaining_days <= 0:
+                    logger.debug(f"[AUTO CLAIM] Skipping {phone}: no remaining days")
+                    acc["auto_mode"] = False
+                    continue
+                
+                try:
+                    total_processed += 1
+                    
+                    # Ensure Magic Wheel token is valid
+                    if not ensure_magic_token(acc):
+                        logger.warning(f"[AUTO CLAIM] Failed to refresh token for {phone}")
                         try:
-                            day = 7 - acc["auto_remaining_days"]
-                            await app.bot.send_message(chat_id=int(uid_str), text=f"✅ Auto Claim ({acc['phone']})\n🎁 +{r['data']['heart']}❤️\n📅 Day {day}/7")
-                        except: pass
-        all_acc[uid_str] = acc_list
-    save_accounts(all_acc)
+                            await app.bot.send_message(
+                                chat_id=int(uid_str),
+                                text=f"❌ Auto Claim ({phone})\n⚠️ Token refresh failed. Please re-login."
+                            )
+                        except Exception as e:
+                            logger.error(f"[AUTO CLAIM] Failed to send error message to {uid_str}: {e}")
+                        continue
+                    
+                    # Call Magic Wheel API to claim daily heart
+                    logger.info(f"[AUTO CLAIM] Calling MW_RECEIVE for {phone}...")
+                    code, resp = magicwheel_api_post(MW_RECEIVE, acc["magic_token"], {"idMission": 1})
+                    logger.info(f"[AUTO CLAIM] MW_RECEIVE response: code={code}, resp={resp}")
+                    
+                    # Check if API call was successful (2xx status code)
+                    if code and 200 <= code < 300 and isinstance(resp, dict) and resp.get("success"):
+                        total_claimed += 1
+                        acc["auto_remaining_days"] -= 1
+                        
+                        # Disable auto mode if all 7 days are complete
+                        if acc["auto_remaining_days"] <= 0:
+                            acc["auto_mode"] = False
+                            logger.info(f"[AUTO CLAIM] Auto mode completed for {phone}")
+                        
+                        # Send success notification
+                        day_num = 7 - acc["auto_remaining_days"]
+                        heart_gained = resp.get("data", {}).get("heart", "?")
+                        notification_text = f"✅ Auto Claim ({phone})\n🎁 +{heart_gained}❤️\n📅 Day {day_num}/7"
+                        
+                        try:
+                            await app.bot.send_message(chat_id=int(uid_str), text=notification_text)
+                            logger.info(f"[AUTO CLAIM] Sent success notification to {uid_str}")
+                        except Exception as e:
+                            logger.error(f"[AUTO CLAIM] Failed to send notification to {uid_str}: {e}")
+                    else:
+                        logger.warning(f"[AUTO CLAIM] API call failed for {phone}: code={code}, resp={resp}")
+                        try:
+                            await app.bot.send_message(
+                                chat_id=int(uid_str),
+                                text=f"❌ Auto Claim ({phone})\n⚠️ API error. Please try manual claim."
+                            )
+                        except Exception as e:
+                            logger.error(f"[AUTO CLAIM] Failed to send error message to {uid_str}: {e}")
+                
+                except Exception as e:
+                    logger.error(f"[AUTO CLAIM] Exception processing account {phone}: {str(e)}", exc_info=True)
+                    try:
+                        await app.bot.send_message(
+                            chat_id=int(uid_str),
+                            text=f"❌ Auto Claim ({phone})\n⚠️ An error occurred. Please check logs."
+                        )
+                    except Exception as send_err:
+                        logger.error(f"[AUTO CLAIM] Failed to send error message: {send_err}")
+            
+            all_acc[uid_str] = acc_list
+        
+        # Save updated accounts
+        save_accounts(all_acc)
+        logger.info(f"[AUTO CLAIM] Job completed: processed={total_processed}, claimed={total_claimed}")
+        
+    except Exception as e:
+        logger.error(f"[AUTO CLAIM] Critical error in scheduled_auto_claim: {str(e)}", exc_info=True)
+
 
 def start_scheduler(application):
-    scheduler = AsyncIOScheduler(timezone=pytz_timezone("Asia/Yangon"))
-    scheduler.add_job(scheduled_auto_claim, CronTrigger(hour=0, minute=5), args=[application])
-    scheduler.start()
+    """
+    Initialize and start the APScheduler for auto-claim jobs.
+    Runs daily at 12:05 AM Myanmar time (UTC+6:30).
+    """
+    logger.info("[SCHEDULER] Initializing scheduler...")
+    
+    try:
+        # Try to use Asia/Yangon timezone
+        try:
+            tz = pytz_timezone("Asia/Yangon")
+            logger.info("[SCHEDULER] Using timezone: Asia/Yangon")
+        except Exception as tz_err:
+            logger.warning(f"[SCHEDULER] Failed to load Asia/Yangon: {tz_err}. Using UTC+6:30 offset.")
+            # Fallback: use UTC with manual offset
+            from datetime import timezone as dt_timezone
+            tz = dt_timezone(timedelta(hours=6, minutes=30))
+        
+        scheduler = AsyncIOScheduler(timezone=tz)
+        
+        # Add the auto-claim job
+        job = scheduler.add_job(
+            scheduled_auto_claim,
+            CronTrigger(hour=0, minute=5, timezone=tz),
+            args=[application],
+            id="auto_claim_job",
+            name="Auto Claim Daily Job",
+            replace_existing=True
+        )
+        
+        logger.info(f"[SCHEDULER] Job added: {job.name} (ID: {job.id})")
+        logger.info(f"[SCHEDULER] Next run time: {job.next_run_time}")
+        
+        # Start the scheduler
+        scheduler.start()
+        logger.info("[SCHEDULER] Scheduler started successfully")
+        
+        # Log all registered jobs
+        jobs = scheduler.get_jobs()
+        logger.info(f"[SCHEDULER] Total jobs registered: {len(jobs)}")
+        for j in jobs:
+            logger.info(f"[SCHEDULER]   - {j.name} (ID: {j.id}, Next run: {j.next_run_time})")
+        
+        return scheduler
+    
+    except Exception as e:
+        logger.error(f"[SCHEDULER] Failed to start scheduler: {str(e)}", exc_info=True)
+        raise
+
+
+
+# ================== MANUAL TEST COMMAND (/auto) ==================
+
+async def auto_claim_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Manual command to trigger auto-claim immediately for the current user's accounts.
+    Usage: /auto
+    """
+    user_id = update.effective_user.id
+    logger.info(f"[MANUAL AUTO] User {user_id} triggered /auto command")
+    
+    # Check force join
+    if not await is_user_member(context, user_id):
+        await force_join_prompt(context, user_id)
+        return
+    
+    try:
+        all_acc = load_accounts()
+        user_accounts = all_acc.get(str(user_id), [])
+        
+        if not user_accounts:
+            await update.message.reply_text("❌ No accounts found. Please add an account first.")
+            return
+        
+        # Filter accounts with auto_mode enabled
+        auto_accounts = [acc for acc in user_accounts if acc.get("auto_mode", False)]
+        
+        if not auto_accounts:
+            await update.message.reply_text("❌ No accounts with auto-claim enabled.")
+            return
+        
+        await update.message.reply_text(f"⏳ Processing {len(auto_accounts)} account(s)...")
+        
+        total_claimed = 0
+        
+        for acc in auto_accounts:
+            phone = acc.get("phone", "unknown")
+            remaining_days = acc.get("auto_remaining_days", 0)
+            
+            logger.info(f"[MANUAL AUTO] Processing {phone} (remaining_days={remaining_days})")
+            
+            if remaining_days <= 0:
+                logger.info(f"[MANUAL AUTO] Skipping {phone}: no remaining days")
+                continue
+            
+            try:
+                # Ensure Magic Wheel token is valid
+                if not ensure_magic_token(acc):
+                    logger.warning(f"[MANUAL AUTO] Failed to refresh token for {phone}")
+                    await update.message.reply_text(f"❌ {phone}: Token refresh failed")
+                    continue
+                
+                # Call Magic Wheel API to claim daily heart
+                logger.info(f"[MANUAL AUTO] Calling MW_RECEIVE for {phone}...")
+                code, resp = magicwheel_api_post(MW_RECEIVE, acc["magic_token"], {"idMission": 1})
+                logger.info(f"[MANUAL AUTO] MW_RECEIVE response: code={code}, resp={resp}")
+                
+                # Check if API call was successful (2xx status code)
+                if code and 200 <= code < 300 and isinstance(resp, dict) and resp.get("success"):
+                    total_claimed += 1
+                    acc["auto_remaining_days"] -= 1
+                    
+                    # Disable auto mode if all 7 days are complete
+                    if acc["auto_remaining_days"] <= 0:
+                        acc["auto_mode"] = False
+                        logger.info(f"[MANUAL AUTO] Auto mode completed for {phone}")
+                    
+                    # Send success notification
+                    day_num = 7 - acc["auto_remaining_days"]
+                    heart_gained = resp.get("data", {}).get("heart", "?")
+                    await update.message.reply_text(f"✅ {phone}\n🎁 +{heart_gained}❤️\n📅 Day {day_num}/7")
+                else:
+                    logger.warning(f"[MANUAL AUTO] API call failed for {phone}: code={code}, resp={resp}")
+                    await update.message.reply_text(f"❌ {phone}: API error")
+            
+            except Exception as e:
+                logger.error(f"[MANUAL AUTO] Exception processing {phone}: {str(e)}", exc_info=True)
+                await update.message.reply_text(f"❌ {phone}: Error - {str(e)}")
+        
+        # Save updated accounts
+        all_acc[str(user_id)] = user_accounts
+        save_accounts(all_acc)
+        
+        await update.message.reply_text(f"✅ Manual auto-claim completed: {total_claimed} account(s) claimed")
+        logger.info(f"[MANUAL AUTO] User {user_id} completed manual auto-claim: {total_claimed} claimed")
+    
+    except Exception as e:
+        logger.error(f"[MANUAL AUTO] Error in auto_claim_manual: {str(e)}", exc_info=True)
+        await update.message.reply_text(f"❌ An error occurred: {str(e)}")
 
 # ================== MAIN ==================
 async def main_async():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("auto", auto_claim_manual))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
