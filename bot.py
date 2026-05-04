@@ -55,20 +55,6 @@ HEADERS_TEMPLATE = {
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ================== PROXY ==================
-def load_proxies() -> List[str]:
-    if not os.path.exists(PROXIES_FILE):
-        return []
-    with open(PROXIES_FILE, "r") as f:
-        return [line.strip() for line in f if line.strip() and not line.startswith("#")]
-
-PROXY_LIST = load_proxies()
-
-def get_random_proxy() -> Optional[str]:
-    if not PROXY_LIST:
-        return None
-    return random.choice(PROXY_LIST)
-
 # ================== STORAGE ==================
 def load_accounts() -> Dict[str, List[Dict[str, Any]]]:
     if os.path.exists(ACCOUNTS_FILE):
@@ -103,17 +89,15 @@ def token_expired(token: str) -> bool:
     return payload["exp"] < (int(time.time()) + 60)
 
 # ================== ASYNC API CALLS ==================
-async def api_call(method, url, headers=None, json_data=None, timeout=20):
-    proxy = get_random_proxy()
-    proxies = {"http://": proxy, "https://": proxy} if proxy else None
-    
-    async with httpx.AsyncClient(proxies=proxies, timeout=timeout, follow_redirects=True) as client:
+async def api_call(method, url, headers=None, json_data=None, timeout=30):
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=False) as client:
         try:
             if method == "GET":
                 resp = await client.get(url, headers=headers)
             else:
                 resp = await client.post(url, headers=headers, json=json_data)
             
+            logger.info(f"API Call {method} {url} -> {resp.status_code}")
             content_type = resp.headers.get("content-type", "")
             if "application/json" in content_type:
                 return resp.status_code, resp.json()
@@ -312,7 +296,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.edit_message_text(chat_id=chat_id, message_id=menu_msg_id, text="⏳ OTP တောင်းဆိုနေပါသည်...")
             except: pass
             
+        logger.info(f"Requesting OTP for {phone}")
         code, resp = await mytel_get_otp(phone)
+        logger.info(f"OTP Request Response: {code}, {resp}")
+        
         if code and (isinstance(resp, dict) and int(resp.get("errorCode", 0)) == 200):
             context.user_data["state"] = "otp"
             if menu_msg_id:
