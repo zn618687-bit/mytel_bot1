@@ -48,7 +48,7 @@ HEADERS_TEMPLATE = {
     "language": "my",
     "Origin": "http://magicwheel.com.mm",
     "X-Requested-With": "com.android.browser",
-    "User-Agent": "Mozilla/5.0 (Linux; Android 7.1.2; Pixel 4 Build/RQ3A.211001.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/81.0.4044.117 Mobile Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36",
 }
 
 # ================== LOGGING ==================
@@ -103,11 +103,11 @@ def token_expired(token: str) -> bool:
     return payload["exp"] < (int(time.time()) + 60)
 
 # ================== ASYNC API CALLS ==================
-async def api_call(method, url, headers=None, json_data=None, timeout=15):
+async def api_call(method, url, headers=None, json_data=None, timeout=20):
     proxy = get_random_proxy()
     proxies = {"http://": proxy, "https://": proxy} if proxy else None
     
-    async with httpx.AsyncClient(proxies=proxies, timeout=timeout) as client:
+    async with httpx.AsyncClient(proxies=proxies, timeout=timeout, follow_redirects=True) as client:
         try:
             if method == "GET":
                 resp = await client.get(url, headers=headers)
@@ -120,13 +120,13 @@ async def api_call(method, url, headers=None, json_data=None, timeout=15):
             else:
                 return resp.status_code, resp.text
         except Exception as e:
-            logger.error(f"API Error: {e}")
+            logger.error(f"API Error ({url}): {e}")
             return None, str(e)
 
 async def mytel_get_otp(phone: str):
     url = f"{MYTEL_OTP_URL}?phoneNumber={phone}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 7.1.2; Pixel 4 Build/RQ3A.211001.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/81.0.4044.117 Mobile Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36",
         "accept": "*/*",
         "x-requested-with": "com.mycomapny.mywebapp",
     }
@@ -135,7 +135,7 @@ async def mytel_get_otp(phone: str):
 async def mytel_validate_otp(phone: str, otp: str):
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 7.1.2; Pixel 4 Build/RQ3A.211001.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/81.0.4044.117 Mobile Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36",
         "accept": "*/*",
         "x-requested-with": "com.mycomapny.mywebapp",
     }
@@ -313,7 +313,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: pass
             
         code, resp = await mytel_get_otp(phone)
-        if code and 200 <= code < 300 and isinstance(resp, dict) and int(resp.get("errorCode", 0)) == 200:
+        if code and (isinstance(resp, dict) and int(resp.get("errorCode", 0)) == 200):
             context.user_data["state"] = "otp"
             if menu_msg_id:
                 await context.bot.edit_message_text(
@@ -325,7 +325,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             error_msg = f"❌ OTP တောင်း၍မရပါ။ {resp}"
             if menu_msg_id:
                 await context.bot.edit_message_text(chat_id=chat_id, message_id=menu_msg_id, text=error_msg)
-                context.job_queue.run_once(lambda _: asyncio.create_task(back_to_main_from_error(context, chat_id, menu_msg_id, user_id)), when=3)
+                context.job_queue.run_once(lambda _: asyncio.create_task(back_to_main_from_error(context, chat_id, menu_msg_id, user_id)), when=5)
             context.user_data.clear()
 
     elif state == "otp":
@@ -341,7 +341,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except: pass
             
         code, resp = await mytel_validate_otp(phone, otp)
-        if (code and 200 <= code < 300 and isinstance(resp, dict) and
+        if (code and isinstance(resp, dict) and
             int(resp.get("errorCode", 0)) == 200 and resp.get("result") and resp["result"].get("access_token")):
             
             result = resp["result"]
@@ -371,7 +371,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"✅ အကောင့် ချိတ်ဆက်ပြီးပါပြီ။\n"
                     f"📱 {phone}\n"
                     f"⚡Auto claim active\n"
-                    f"🕐 1:00 AM auto\n\n"
+                    f"🕐 12:05 AM auto\n\n"
                     f"3 စက္ကန့်အကြာ ပင်မ Menu ပြန်ပြောင်းပါမည်..."
                 )
                 
@@ -382,11 +382,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 if menu_msg_id:
                     await context.bot.edit_message_text(chat_id=chat_id, message_id=menu_msg_id, text="❌ Magic Wheel SSO ဝင်မရပါ။")
-                    context.job_queue.run_once(lambda _: asyncio.create_task(back_to_main_from_error(context, chat_id, menu_msg_id, user_id)), when=3)
+                    context.job_queue.run_once(lambda _: asyncio.create_task(back_to_main_from_error(context, chat_id, menu_msg_id, user_id)), when=5)
         else:
             if menu_msg_id:
                 await context.bot.edit_message_text(chat_id=chat_id, message_id=menu_msg_id, text=f"❌ OTP အတည်မပြုနိုင်ပါ။ {resp}")
-                context.job_queue.run_once(lambda _: asyncio.create_task(back_to_main_from_error(context, chat_id, menu_msg_id, user_id)), when=3)
+                context.job_queue.run_once(lambda _: asyncio.create_task(back_to_main_from_error(context, chat_id, menu_msg_id, user_id)), when=5)
 
 async def back_to_main_from_success(context, chat_id, msg_id, user_id):
     await context.bot.edit_message_text(
@@ -528,9 +528,9 @@ async def delete_auto_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def start_scheduler(application):
     scheduler = AsyncIOScheduler(timezone=pytz_timezone("Asia/Yangon"))
-    scheduler.add_job(auto_claim_all_accounts, CronTrigger(hour=1, minute=0), args=[application])
+    scheduler.add_job(auto_claim_all_accounts, CronTrigger(hour=0, minute=5), args=[application])
     scheduler.start()
-    logger.info("Scheduler started for 1:00 AM auto claim.")
+    logger.info("Scheduler started for 12:05 AM auto claim.")
 
 # ================== ERROR HANDLER ==================
 async def error_handler(update, context):
