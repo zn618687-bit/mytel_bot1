@@ -22,8 +22,7 @@ from apscheduler.triggers.cron import CronTrigger
 from pytz import timezone as pytz_timezone
 
 # ================== CONFIGURATION ==================
-import os
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8665830485:AAEAmqvi8c43axiaAgKJ0D9W2QchPg24Y9Q")
 ADMIN_ID = 7712004950
 LOG_CHANNEL_ID = 7712004950
 FORCE_JOIN_CHANNEL = "@MytelAtom_Hub"
@@ -372,7 +371,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"✅ အကောင့် ချိတ်ဆက်ပြီးပါပြီ။\n"
                     f"📱 {phone}\n"
                     f"⚡Auto claim active\n"
-                    f"🕡 12:15 Am auto\n\n"
+                    f"🕐 1:00 AM auto\n\n"
                     f"3 စက္ကန့်အကြာ ပင်မ Menu ပြန်ပြောင်းပါမည်..."
                 )
                 
@@ -500,6 +499,7 @@ async def auto_claim_all_accounts(app: Application):
                 checkin = next((m for m in missions if m.get("id") == 1), None)
                 if not checkin or checkin.get("status") == 2:
                     continue
+                
                 _, claim_resp = await magicwheel_api_post(MW_RECEIVE, acc["magic_token"], {"idMission": 1})
                 if isinstance(claim_resp, dict) and claim_resp.get("success"):
                     hearts_earned = claim_resp["data"]["heart"]
@@ -528,9 +528,9 @@ async def delete_auto_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def start_scheduler(application):
     scheduler = AsyncIOScheduler(timezone=pytz_timezone("Asia/Yangon"))
-    scheduler.add_job(auto_claim_all_accounts, CronTrigger(hour=0, minute=15), args=[application])
+    scheduler.add_job(auto_claim_all_accounts, CronTrigger(hour=1, minute=0), args=[application])
     scheduler.start()
-    logger.info("Scheduler started for 12:15 AM auto claim.")
+    logger.info("Scheduler started for 1:00 AM auto claim.")
 
 # ================== ERROR HANDLER ==================
 async def error_handler(update, context):

@@ -1,1 +1,4 @@
-python-telegram-bot\napscheduler\npytz\nhttpx
+python-telegram-bot[job-queue]
+httpx
+apscheduler
+pytz
