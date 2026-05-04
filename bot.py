@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Spirit Bot – Optimized (Async HTTP + Custom Auto-Claim Time)
+Spirit Bot – Optimized (Async HTTP + Custom Auto-Claim Time + Task Notifications)
 """
 
 import asyncio, logging, json, os, random, time, base64, httpx
@@ -59,10 +59,8 @@ logger = logging.getLogger(__name__)
 def load_json(filename: str, default: Any) -> Any:
     if os.path.exists(filename):
         with open(filename, "r", encoding="utf-8") as f:
-            try:
-                return json.load(f)
-            except:
-                return default
+            try: return json.load(f)
+            except: return default
     return default
 
 def save_json(filename: str, data: Any):
@@ -271,17 +269,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 context.job_queue.run_once(lambda _: asyncio.create_task(back_to_main(context, chat_id, menu_msg_id)), when=5)
 
     elif state == "set_time":
-        if ":" in text and len(text) == 5:
-            try:
+        try:
+            # Handle HH:MM format
+            if ":" in text:
                 h, m = map(int, text.split(":"))
-                if 0 <= h < 24 and 0 <= m < 60:
-                    settings = load_settings(); settings["auto_claim_time"] = text; save_settings(settings)
-                    update_scheduler(context.application)
-                    if menu_msg_id:
-                        await context.bot.edit_message_text(chat_id=chat_id, message_id=menu_msg_id, text=f"✅ Auto-Claim Time ကို {text} သို့ ပြောင်းလဲလိုက်ပါပြီ။", reply_markup=settings_keyboard())
-                    context.user_data.clear(); return
-            except: pass
-        temp = await update.message.reply_text("❌ အချိန်ပုံစံ မှားယွင်းနေပါသည်။ HH:MM (ဥပမာ 12:05) ပို့ပေးပါ။")
+            # Handle just hour (1-12)
+            elif text.isdigit():
+                h = int(text); m = 0
+            else: raise ValueError()
+            
+            if 0 <= h < 24 and 0 <= m < 60:
+                time_str = f"{h:02d}:{m:02d}"
+                settings = load_settings(); settings["auto_claim_time"] = time_str; save_settings(settings)
+                update_scheduler(context.application)
+                if menu_msg_id:
+                    await context.bot.edit_message_text(chat_id=chat_id, message_id=menu_msg_id, text=f"✅ Auto-Claim Time ကို {time_str} သို့ ပြောင်းလဲလိုက်ပါပြီ။", reply_markup=settings_keyboard())
+                context.user_data.clear(); return
+        except: pass
+        temp = await update.message.reply_text("❌ အချိန်ပုံစံ မှားယွင်းနေပါသည်။ HH:MM (ဥပမာ 12:05) သို့မဟုတ် နာရီ (ဥပမာ 1) ပို့ပေးပါ။")
         context.job_queue.run_once(lambda _: asyncio.create_task(delete_msg_safe(context, chat_id, temp.message_id)), when=3)
 
 async def back_to_main(context, chat_id, msg_id):
@@ -317,7 +322,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await edit_or_send(query.message, "⚙️ Settings", reply_markup=settings_keyboard())
     elif data == "set_claim_time":
         context.user_data["state"] = "set_time"; context.user_data["menu_msg_id"] = query.message.message_id
-        await edit_or_send(query.message, "⏰ Auto-Claim လုပ်လိုသောအချိန်ကို HH:MM (ဥပမာ 00:05) ပုံစံဖြင့် ပို့ပေးပါ။", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ပယ်ဖျက်", callback_data="menu_settings")]]))
+        await edit_or_send(query.message, "⏰ Auto-Claim လုပ်လိုသောအချိန်ကို HH:MM (ဥပမာ 01:09) သို့မဟုတ် နာရီ (ဥပမာ 1) ပုံစံဖြင့် ပို့ပေးပါ။", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ပယ်ဖျက်", callback_data="menu_settings")]]))
     elif data == "cancel_add":
         context.user_data.clear(); await back_to_main(context, query.message.chat_id, query.message.message_id)
     elif data == "back_main":
@@ -337,18 +342,25 @@ async def auto_claim_all_accounts(app: Application):
                 if not await ensure_magic_token(acc): continue
                 _, missions_resp = await magicwheel_api_get(MW_MISSIONS, acc["magic_token"])
                 if not (isinstance(missions_resp, dict) and missions_resp.get("success")): continue
-                checkin = next((m for m in missions_resp["data"] if m.get("id") == 1), None)
-                if not checkin or checkin.get("status") == 2: continue
-                _, claim_resp = await magicwheel_api_post(MW_RECEIVE, acc["magic_token"], {"idMission": 1})
-                if isinstance(claim_resp, dict) and claim_resp.get("success"):
-                    hearts = claim_resp["data"]["heart"]
-                    _, h_resp = await magicwheel_api_get(MW_GET_HEART, acc["magic_token"])
-                    total = h_resp["data"]["heart"] if (isinstance(h_resp, dict) and h_resp.get("success")) else hearts
-                    await app.bot.send_message(chat_id, f"✅ Auto Check-in\n📱 {acc['phone']}\n🎁 ရရှိသည့်အသဲ: +{hearts}❤️\n💰 စုစုပေါင်း: {total}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Delete", callback_data="delete_auto_msg")]]))
+                # Claim all available missions
+                for mission in missions_resp["data"]:
+                    if mission.get("status") == 1: # Available to claim
+                        mid = mission.get("id")
+                        _, claim_resp = await magicwheel_api_post(MW_RECEIVE, acc["magic_token"], {"idMission": mid})
+                        if isinstance(claim_resp, dict) and claim_resp.get("success"):
+                            hearts = claim_resp["data"]["heart"]
+                            _, h_resp = await magicwheel_api_get(MW_GET_HEART, acc["magic_token"])
+                            total = h_resp["data"]["heart"] if (isinstance(h_resp, dict) and h_resp.get("success")) else hearts
+                            msg = (f"✅ Task Claim Success!\n"
+                                   f"📱 {acc['phone']}\n"
+                                   f"📝 Task ID: {mid}\n"
+                                   f"🎁 ရရှိသည့်အသဲ: +{hearts}❤️\n"
+                                   f"💰 စုစုပေါင်း: {total}")
+                            await app.bot.send_message(chat_id, msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Delete", callback_data="delete_auto_msg")]]))
             except Exception as e: logger.error(f"Auto claim error: {e}")
     save_accounts(all_acc)
     if LOG_CHANNEL_ID:
-        try: await app.bot.send_message(LOG_CHANNEL_ID, "✅ Auto claim completed.")
+        try: await app.bot.send_message(LOG_CHANNEL_ID, "✅ Auto claim cycle completed.")
         except: pass
 
 async def delete_auto_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -360,7 +372,6 @@ def update_scheduler(application):
     settings = load_settings()
     time_str = settings.get("auto_claim_time", "00:05")
     h, m = map(int, time_str.split(":"))
-    
     for job in scheduler.get_jobs(): job.remove()
     scheduler.add_job(auto_claim_all_accounts, CronTrigger(hour=h, minute=m), args=[application])
     logger.info(f"Scheduler updated for {time_str} Asia/Yangon.")
@@ -372,11 +383,8 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler, pattern="^(?!delete_auto_msg).*"))
     app.add_handler(CallbackQueryHandler(delete_auto_msg, pattern="^delete_auto_msg$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
     async def post_init(application):
-        update_scheduler(application)
-        scheduler.start()
-
+        update_scheduler(application); scheduler.start()
     app.post_init = post_init
     logger.info("Spirit Bot is running...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
